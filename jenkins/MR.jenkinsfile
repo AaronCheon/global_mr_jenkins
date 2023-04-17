@@ -1,0 +1,109 @@
+properties properties: [[$class: 'GitLabConnectionProperty', gitLabConnection: 'Portal Gitlab']]
+properties properties: [[$class: 'GitLabConnectionProperty', gitLabConnection: 'Venus Gitlab']]
+
+pipeline{
+  agent {
+    label 'ariel'
+  }
+  stages{
+    stage("Find Local MR"){
+      steps{
+        script{
+          // Set Default environment
+          env.startname = "main"
+          env.wspath = env.WORKSPACE
+          env.HOMEPATH = "."
+          // If configured
+          if(env.gitlabTargetRepoName != null){
+            updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'running')
+            def gitlabHttpUrl = env.gitlabTargetRepoHttpUrl.replace(".git", "")
+            currentBuild.description = """<a href="${gitlabHttpUrl}/-/merge_requests/${env.gitlabMergeRequestIid}"> ${env.gitlabTargetRepoName}::${env.gitlabSourceBranch}->${env.gitlabTargetBranch} #${env.gitlabMergeRequestIid}</a>"""
+
+// Do not skip
+//            withCredentials([string(credentialsId: 'gitlabToken', variable: 'gitlab')]) {
+//              localMR = sh returnStatus: true, script: "python3 libs/find_MRhooks.py --pn ${env.gitlabSourceRepoURL} --token ${gitlab}"
+//              // if local MR Not exist
+//              if (localMR == 0) {
+//                env.should_skip = "false"
+//              }
+//            }
+          }
+        }
+      }
+    }
+    stage("Initial"){
+// Do not skip
+//      when{
+//        expression { env.should_skip != null }
+//      }
+      steps {
+        script{
+          // Set Default environment
+          env.startname = "main"
+          env.wspath = env.WORKSPACE
+          env.HOMEPATH = "."
+          // If configured
+          if(env.gitlabTargetRepoName != null){
+            cleanWs()   // Clean Workspace
+            env.isGitLab = true
+            env.startname = "MR"
+            env.HOMEPATH = gitlabTargetRepoName
+              checkout(
+                [
+                  $class: 'GitSCM',
+                  branches: [[name: '*/gitlabSourceBranch']],
+                  extensions: [
+                    [$class: 'RelativeTargetDirectory', relativeTargetDir: gitlabTargetRepoName],
+                    [$class: 'PreBuildMerge', options: [mergeRemote: "origin", mergeTarget: "$gitlabTargetBranch"]]
+                  ],
+                  userRemoteConfigs: [
+                    [credentialsId: 'ssh_jenkins', name: 'origin', url: gitlabTargetRepoSshUrl]
+                  ]
+                ]
+              )
+            }
+          else {
+            checkout scm
+          }
+
+          def settingFile = "${env.HOMEPATH}/Jenkins.yml"
+          if(fileExists(settingFile)){
+            data = readYaml(file : settingFile)
+            def targetYaml = data['TargetBranches']
+            if (targetYaml == null){
+              targetYaml = []
+            }
+            targetYaml.add('^(main|master)$')
+            if (targetYaml.any{element -> (~element).matcher(env.gitlabTargetBranch).matches()} == true){
+              if (data.env != null){
+                for(each in data.env.keySet()){
+                  env[each] = data.env[each]
+                }
+              }
+             (tmp, stageInfo) = stagefy.getData(env.startname, settingFile)
+              stageInfo()
+            }
+          }
+        }
+      }
+    }
+  }
+    post {
+        success {
+          script{
+            sleep time: 3, unit: 'MINUTES'
+            updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'success')
+          }
+        }
+        failure {
+          script{
+            updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'failed')
+          }
+        }
+        aborted {
+          script{
+            updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'failed')
+          }
+        }
+    }
+}
